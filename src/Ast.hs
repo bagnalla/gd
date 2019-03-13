@@ -10,6 +10,7 @@ data Unop =
   | UNeg
   | UNot
   | UGetNode
+  | UAttribute
   deriving (Eq, Show)
 
 data Binop =
@@ -117,7 +118,7 @@ data Type =
   deriving (Eq, Show)
 
 data Command α = 
-  CEnum α [(Id, Maybe (Expr α))]
+  CEnum α (Maybe Id) [(Id, Maybe (Expr α))]
   -- export, export list, onready, name, initial value, setget
   | CVar α Bool (Maybe (Type, [Expr α])) Bool Id (Maybe (Expr α))
     (Maybe (Id, Id))
@@ -132,7 +133,7 @@ data Command α =
   deriving Eq
 
 instance Show (Command α) where
-  show (CEnum _ entries) = "(CEnum (" ++
+  show (CEnum _ nm entries) = "(CEnum " ++ show nm ++ " (" ++
     intercalate " "
     ((\(x, e) -> "(" ++ show x ++ " " ++ show e ++ ")") <$> entries)
     ++ "))"
@@ -186,8 +187,8 @@ instance Show (Stmt α) where
                          intercalate " " (show <$> ss) ++ "))")
                       <$> elifs) ++ ") (" ++
     (showMaybe (\els' ->
-             "(" ++ intercalate " " (show <$> els') ++ ")")
-     els) ++ "))"
+                  "(" ++ intercalate " " (show <$> els') ++ ")")
+      els) ++ "))"
   show (SWhile _ e body) = "(SWhile " ++ show e ++ " (" ++
     intercalate " " (show <$> body) ++ "))"
   show (SFor _ x e body) =

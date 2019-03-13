@@ -49,7 +49,7 @@ literal = choice
   , LFloat  <$> float
   , LString <$> stringLiteral
   , LArray  <$> brackets (commaSep expr)
-  , LDict   <$> brackets (commaSep dictEntry) ]
+  , LDict   <$> braces (commaSep dictEntry) ]
 
 call :: SourcePos -> Parser (Expr SourcePos)
 call s = do
@@ -127,6 +127,7 @@ operatorTable :: [[Operator Parser (Expr SourcePos)]]
 operatorTable =  [
   [ prefix "$" $ flip EUnop UGetNode ],
   [ indexOp ],
+  [ prefix "." $ flip EUnop UAttribute ],
   [ binary "." $ flip EBinop BAttribute ],
   [ binaryNoAssoc "is" $ flip EBinop BIs ],
   [ prefix "~" $ flip EUnop UBitwiseNot ],
@@ -353,8 +354,9 @@ enumEntry = do
 enum :: SourcePos -> Parser (Command SourcePos)
 enum pos = L.indentBlock scn $ do
   keyword "enum"
+  nm <- optional ident
   entries <- braces $ commaSep enumEntry
-  return $ L.IndentNone $ CEnum pos entries
+  return $ L.IndentNone $ CEnum pos nm entries
 
 setget :: Parser (Id, Id)
 setget = do
