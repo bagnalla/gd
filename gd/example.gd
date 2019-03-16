@@ -4,6 +4,12 @@
 
 extends BaseClass
 
+# signal Bakow(asdasd, asd)
+
+# Declare the class name here
+class_name ScriptName, "res://path/to/optional/icon.svg"
+# class_name
+
 # Member Variables
 
 var a = 5

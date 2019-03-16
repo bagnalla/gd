@@ -2,6 +2,8 @@ module Main where
 
 import System.Environment (getArgs)
 
+import Text.Megaparsec.Error
+
 import Ast
 import Parser
 
@@ -17,8 +19,8 @@ main = do
   -- Read in source file
   src <- readFile filename
 
-  let cls = parse filename src
-
-  putStrLn $ show cls
+  putStrLn $ case parse filename src of
+               Left err -> errorBundlePretty err
+               Right cls -> show cls
 
   putStrLn $ "hecc"

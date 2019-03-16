@@ -32,8 +32,9 @@ sc = L.space (void $ some (char ' ' <|> char '\t')) lineComment blockComment
 --    "case", "break", "continue", "pass", "return", "class", "extends",
 --    "is", "self", "tool", "signal", "func", "static", "const", "enum",
 --    "var", "onready", "export", "setget", "breakpoint", "preload",
---    "yield", "assert", "remote", "master", "slave", "sync", "PI", "TAU",
---    "INF", "NAN", "true", "false"]
+--    "yield", "assert", "remote", "master", "puppet", "remotesync",
+--    "mastersync", "puppetsync", "PI", "TAU", "INF", "NAN", "true",
+--    "false"]
 
 -- reservedOps =
 --   ["+", "-", "*", "/", "is", "~", "-", "%", "<<", ">>", "&", "^", "|",
@@ -69,34 +70,48 @@ signedFloat :: Parser Double
 signedFloat = L.signed sc float
 
 keyword :: String -> Parser String
-keyword k = lexeme (string k <* notFollowedBy alphaNumChar)
-
-withPredicate1
-  :: (a -> Bool)       -- ^ The check to perform on parsed input
-  -> String            -- ^ Message to print when the check fails
-  -> Parser a          -- ^ Parser to run
-  -> Parser a          -- ^ Resulting parser that performs the check
-withPredicate1 f msg p = do
-  r <- lookAhead p
-  if f r
-    then p
-    else fail msg
-
-withPredicate2
-  :: (a -> Bool)       -- ^ The check to perform on parsed input
-  -> String            -- ^ Message to print when the check fails
-  -> Parser a          -- ^ Parser to run
-  -> Parser a          -- ^ Resulting parser that performs the check
-withPredicate2 f msg p = do
-  o <- getOffset
-  r <- p
-  if f r
-    then return r
-    else do
-      setOffset o
-      fail msg
+-- keyword k = lexeme (string k <* notFollowedBy alphaNumChar)
+-- Add 'try' here so it doesn't consume the string k when
+-- 'notFollowedBy' fails.
+keyword k = (lexeme . try) (string k <* notFollowedBy (alphaNumChar <|> char '_'))
 
 ident :: Parser Id
 ident = Id <$> lexeme
   ((:) <$> (letterChar <|> char '_') <*> many (alphaNumChar <|> char '_')
    <?> "variable")
+
+-- withPredicate1
+--   :: (a -> Bool)       -- ^ The check to perform on parsed input
+--   -> String            -- ^ Message to print when the check fails
+--   -> Parser a          -- ^ Parser to run
+--   -> Parser a          -- ^ Resulting parser that performs the check
+-- withPredicate1 f msg p = do
+--   r <- lookAhead p
+--   if f r
+--     then p
+--     else fail msg
+
+-- withPredicate2
+--   :: (a -> Bool)       -- ^ The check to perform on parsed input
+--   -> String            -- ^ Message to print when the check fails
+--   -> Parser a          -- ^ Parser to run
+--   -> Parser a          -- ^ Resulting parser that performs the check
+-- withPredicate2 f msg p = do
+--   o <- getOffset
+--   r <- p
+--   if f r
+--     then return r
+--     else do
+--       setOffset o
+--       fail msg
+
+
+-- | @postfixChain p op@ is used to remove left recursion like
+-- @chainl1@, except @op@ is a postfix operator instead of infix
+postfixChain :: Parser a -> Parser (a -> a) -> Parser a
+postfixChain p op = do
+  x <- p
+  rest x
+  where
+    rest x = (do f <- op
+                 rest $ f x) <|> return x
