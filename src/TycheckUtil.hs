@@ -182,6 +182,14 @@ is_extends_command :: Command α -> Bool
 is_extends_command (CExtends _ _) = True
 is_extends_command _ = False
 
+is_break_statement :: Stmt α -> Bool
+is_break_statement (SBreak _) = True
+is_break_statement _ = False
+
+is_continue_statement :: Stmt α -> Bool
+is_continue_statement (SContinue _) = True
+is_continue_statement _ = False
+
 is_literal_pattern :: Pattern α -> Bool
 is_literal_pattern (PLiteral _) = True
 is_literal_pattern _ = False

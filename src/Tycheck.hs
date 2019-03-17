@@ -10,25 +10,22 @@ import qualified Data.Map as Map
 import Data.Maybe (fromMaybe)
 
 import Ast
-import Symtab (add, addBindings, empty, fromList, get, Id(..), Symtab,
-               union)
+import Symtab (add, addBindings, empty, fromList,
+               get, Id(..), Symtab, union)
 import TycheckUtil
 import Util
 
--- TODO: functions with non-void (and non-dynamic) return types must
--- return a value in every possible execution flow.
 
 type Gamma = Symtab Type
 
 type Namespace = Symtab Type
 
 data TycheckState =
-  TycheckState { s_parent_class :: Id
+  TycheckState { s_parent_class :: Maybe Type
                , s_class :: Type
                , s_class_static :: Type
-               , s_gensym_counter :: Int
+               -- , s_gensym_counter :: Int
                , s_constants :: Symtab (Expr Type)
-               -- , s_vars :: Symtab Type
                , s_delta :: Symtab Type
                , s_namespaces :: Map.Map Type Namespace }
 
@@ -65,6 +62,20 @@ get_namespace ty = do
   namespaces <- gets s_namespaces
   return $ Map.lookup ty namespaces
 
+lookup_namespace :: Show α => α -> Type -> Id -> TycheckM Type
+lookup_namespace fi ty x = do
+  ns <- get_namespace ty
+  case ns of
+    Just ns' ->
+      case Symtab.get x ns' of
+        Just ty' -> return ty'
+        Nothing ->
+          typeError fi $ "attribute " ++ show x ++ " not bound in "
+          ++ show ty ++ " namespace"
+    Nothing ->
+      typeError fi $ "no namespace found for type " ++ show ty
+
+
 ----------------
 -- | Typechecker
 
@@ -74,15 +85,14 @@ type TycheckM a =
    (ExceptT String
     (StateT TycheckState Identity))) a
 
-nextSym :: String -> TycheckM String
-nextSym prefix = do
-  i <- S.gets s_gensym_counter
-  modify $ \s -> s { s_gensym_counter = i + 1 }
-  return $ prefix ++ show i
+-- nextSym :: String -> TycheckM String
+-- nextSym prefix = do
+--   i <- S.gets s_gensym_counter
+--   modify $ \s -> s { s_gensym_counter = i + 1 }
+--   return $ prefix ++ show i
 
-runTycheck :: TycheckState -> Id -> TycheckM a ->
-              Either String (a, [String])
-runTycheck s mod_name =
+runTycheck :: TycheckState -> TycheckM a -> Either String (a, [String])
+runTycheck s =
   fst . runIdentity . flip runStateT s . runExceptT .
   flip runReaderT empty . runWriterT
 
@@ -191,7 +201,10 @@ tycheckExpr (ECall fi f args) = do
         typeError fi $ "wrong number of arguments to function " ++ show f
         ++ ". expected: " ++ show (length arg_tys) ++ ", actual: "
         ++ show (length args)
-    _ -> typeError fi $ "expected function type. actual: " ++ show f_ty
+    _ ->
+      debugPrint (show f) $
+      debugPrint (show f') $
+      typeError fi $ "expected function type. actual: " ++ show f_ty
 
 tycheckExpr (EUnop fi UBitwiseNot e) = do
   e' <- tycheckExpr e
@@ -225,12 +238,19 @@ tycheckExpr (EUnop fi UGetNode e) = do
     else
     typeError fi $ "expected string literal or identifier after '$'"
 
--- TODO: look up attribute in parent class. If parent class is unknown
+-- Look up attribute in parent class. If parent class is unknown
 -- (missing 'extends' command or just an unknown type) then error.
 tycheckExpr (EUnop fi UAttribute e) = do
+  parent_class <- gets s_parent_class
   case e of
-    EIdent _ x -> undefined
-    _ -> typeError fi $ ""
+    EIdent _ x ->
+      case parent_class of
+        Just par -> do
+          ty <- lookup_namespace fi par x
+          return $ EUnop ty UAttribute $ EIdent TVoid x
+        Nothing  -> typeError fi "parent class unknown"
+    _ -> typeError fi $
+         "expected identifier in attribute slot. actual: " ++ show e
 
 tycheckExpr (EBinop fi b e1 e2) = do
   e1' <- tycheckExpr e1
@@ -268,10 +288,12 @@ tycheckExpr (EBinop fi b e1 e2) = do
     else
     case b of
       BIs ->
-        case e2' of
-          EType _ _ ->
-            return $ EBinop TBool b e1' e2'
-          _ -> typeError fi ""
+        -- TODO: need to map the expression to a type somehow
+        typeError fi "'is' operator not supported yet"
+        -- case e2' of
+        --   EType _ _ ->
+        --     return $ EBinop TBool b e1' e2'
+        --   _ -> typeError fi ""
       BIn -> -- Allow compatibility in both directions? Yes for now.
         case t2 of
           TArray t ->
@@ -312,10 +334,10 @@ tycheckExpr (EBinop fi b e1 e2) = do
         -- TODO: look up the identifier in e2 in the namespace of e1's
         -- type.
         case e2 of
-          EIdent _ x ->
-            -- TODO: look up x in the namespace of e1's type.
-            let t = undefined in
-              return $ EBinop t b e1' $ TDynamic <$ e2
+          EIdent _ x -> do
+            -- Look up x in the namespace of e1's type.
+            t <- lookup_namespace fi t1 x
+            return $ EBinop t b e1' $ TDynamic <$ e2
           _ -> typeError fi ""
       BAssign ->
         if t2 `compatible` t1 then
@@ -344,7 +366,7 @@ tycheckExpr (EIfElse fi e1 e2 e3) = do
     else
       typeError fi $ "expected bool. actual: " ++ show t1
 
-tycheckExpr (EType _ t) = return $ EType TDynamic t
+-- tycheckExpr (EType _ t) = return $ EType TDynamic t
 
 
 assertTyExpr :: Show α => Type -> Expr α -> TycheckM (Expr Type)
@@ -440,7 +462,31 @@ tycheckCommand (CEnum fi nm fields) = do
   fields' <- mapM (secondM $ mapM $ assertTyExpr TInt) fields
   return $ CEnum TVoid nm fields'
 
-tycheckCommand (CVar fi _ _ _ x ty init_val setget) = undefined
+tycheckCommand (CVar fi export export_list onready x ty init_val setget) = do
+  export_list' <- flip mapM export_list $ secondM (mapM tycheckExpr)
+  init_val' <- mapM tycheckExpr init_val
+  ty' <- case (ty, init_val') of
+           -- If wanting to infer type then there must be an
+           -- initializer (should be enforced by the parser).
+           (Nothing, Nothing) ->
+             typeError fi "no expression to infer type from"
+           -- Take the type of the initial expression.
+           (Nothing, Just val) ->
+             return $ data_of_expr val
+           -- Take the declared type.
+           (Just ty', Nothing) -> return ty'
+           -- Make sure the initial expression is compatible with the
+           -- declared type.
+           (Just ty', Just val) ->
+             if data_of_expr val `compatible` ty' then
+               return ty'
+             else
+               typeError fi $ show (data_of_expr val) ++
+               " not compatible with " ++ show ty'
+  -- TODO: if setget, make sure the functions exist and have
+  -- compatible types.
+  return $
+    CVar TVoid export export_list' onready x (Just ty') init_val' setget
 
 tycheckCommand (CConst fi x ty e) = do
   γ <- gets s_constants
@@ -458,7 +504,7 @@ tycheckCommand (CConst fi x ty e) = do
     else
     typeError fi "expected a constant expression"
 
--- Static functions won't include member bindings in initial gamma.
+-- Static functions don't include member bindings in initial gamma.
 tycheckCommand (CFunc fi static f ret_ty args body) = do
   class_ty <- gets s_class
   class_static_ty <- gets s_class_static
@@ -469,41 +515,57 @@ tycheckCommand (CFunc fi static f ret_ty args body) = do
             class_static_namespace
           else
             Symtab.union class_static_namespace class_namespace
-  let γ' = addBindings args γ
+  let γ' = addBindings (args ++ [(Id "self", class_ty)]) γ
   body' <- local (const γ') $ tycheckStmts body
-  -- Analyze body to ensure that all return statements match the
-  -- return type, and if the return type is non-void that all branches
-  -- return something.
-  if ret_ty /= TVoid && not (always_returns body') then
+  if no_breaks_continues body' then
+    -- Analyze body to ensure that all return statements match the
+    -- return type, and if the return type is non-void that all branches
+    -- return something.
+    if ret_ty /= TVoid && not (always_returns body') then
     typeError fi
     "function with non-void return type must always return something"
     else do
-    check_returns fi ret_ty body'
-    return $ CFunc TVoid static f ret_ty args body'
+      check_returns fi ret_ty body'
+      return $ CFunc TVoid static f ret_ty args body'
+    else
+    typeError fi $ "break or continue outside of loop"
 
-tycheckCommand (CExtends fi e) = undefined
+tycheckCommand (CExtends fi ty) = do
+  parent_class <- gets s_parent_class
+  case parent_class of
+    Just c -> typeError fi ""
+    Nothing ->
+      modify $ \s -> s { s_parent_class = Just ty }
+  return $ CExtends TVoid ty
 
 tycheckCommand (CClass fi cls) = do
-  outer_class <- gets s_class_static
-  CClass TVoid <$> tycheckClass outer_class cls
+  outer_class <- gets s_class
+  outer_class_static <- gets s_class_static
+  CClass TVoid <$> tycheckClass outer_class outer_class_static cls
 
-tycheckCommand (CSignal _ _ _) = undefined
+tycheckCommand (CSignal fi _ _) =
+  typeError fi "signals not supported yet"
 
-tycheckCommand (CClassName fi nm path) = undefined
+tycheckCommand (CClassName fi _ _) =
+  typeError fi "'class_name' not supported yet"
 
 
-tycheckClass :: Show α => Type -> Class α -> TycheckM (Class Type)
-tycheckClass outer_class (Class { class_name = nm
-                                , class_commands = coms }) = do
+tycheckClass :: Show α => Type -> Type -> Class α -> TycheckM (Class Type)
+tycheckClass outer_class outer_class_static
+  (Class { class_name = nm
+         , class_commands = coms }) = do
   let class_ty = TClass outer_class nm
-  let class_static_ty = TClassStatic outer_class nm
+  let class_static_ty = TClassStatic outer_class_static nm
+  -- Set the class types in the typechecker state.
+  modify $ \s -> s { s_class = class_ty
+                   , s_class_static = class_static_ty }
+  
   let f_coms = filter is_func_command coms
   let phase1_coms = filter is_phase1_command coms
   let phase2_coms = filter is_phase2_command coms
-  -- let extends_coms = filter is_extends_command coms
   let f_tys = flip map f_coms $
-              \(CFunc _ _ f ty args _) ->
-                (f, TFunc ty $ snd <$> args)
+              \(CFunc _ static f ty args _) ->
+                (f, static, TFunc ty $ snd <$> args)
   
   -- Add bindings for all static things (consts, enums, static
   -- methods, etc.) to the static namespace for this class, and add
@@ -513,7 +575,16 @@ tycheckClass outer_class (Class { class_name = nm
   -- 'self' binding.
 
   -- Add types of all functions to delta.
-  modify $ \s -> s { s_delta = addBindings f_tys $ s_delta s }
+  -- modify $ \s -> s { s_delta = addBindings f_tys $ s_delta s }
+  
+  -- Add function bindings to delta and the class namespaces.
+  flip mapM_ f_tys $
+    \(f, static, ty) -> do
+      modify $ \s -> s { s_delta = Symtab.add f ty $ s_delta s }
+      if static then
+        upd_namespace class_static_ty f ty
+        else
+        upd_namespace class_ty f ty
 
   -- Typecheck static stuff (constants, enums), adding their bindings
   -- to the state along the way.
@@ -555,27 +626,51 @@ tycheckClass outer_class (Class { class_name = nm
                      -- Add binding to class namespace.
                      upd_namespace class_ty x ty
                  return c'
+  
+  f_coms' <- flip mapM f_coms $
+             \c -> do
+               c' <- tycheckCommand c
+               case c' of
+                 CFunc _ _ f ty args _ ->
+                   -- Hmm maybe nothing to do here since the bindings
+                   -- have already been added.
+                   return ()
+               return c'
 
-  undefined
+  -- Restore the original class types in the typechecker state.
+  modify $ \s -> s { s_class = outer_class
+                   , s_class_static = outer_class_static }
 
--- data Class α = Class { class_name :: Id
---                      , class_commands :: [Command α] }
---   deriving (Eq, Functor)
+  return $ Class { class_name = nm
+                 , class_commands = phase1_coms' ++
+                                    phase2_coms' ++
+                                    f_coms' }
 
--- data Command α = 
---   CEnum α (Maybe Id) [(Id, Maybe (Expr α))]
---   -- export, export list, onready, name, type, initial value, setget
---   | CVar α Bool (Maybe (Type, [Expr α])) Bool Id (Maybe Type) (Maybe (Expr α))
---     (Maybe (Id, Id))
---   | CConst α Id (Expr α)
---   -- static, name, return type, args, body
---   | CFunc α Bool Id Type [(Id, Type)] [Stmt α]
---   | CExtends α (Expr α)
---   | CClass α (Class α)
---   -- name, args
---   | CSignal α Id [Id]
---   | CClassName α Id (Maybe String)
---   deriving (Eq, Functor)
+-- runTycheck :: TycheckState -> TycheckM a -> Either String (a, [String])
+
+-- data TycheckState =
+--   TycheckState { s_parent_class :: Maybe Type
+--                , s_class :: Type
+--                , s_class_static :: Type
+--                , s_gensym_counter :: Int
+--                , s_constants :: Symtab (Expr Type)
+--                , s_delta :: Symtab Type
+--                , s_namespaces :: Map.Map Type Namespace }
+
+-- tycheckClass :: Show α => Type -> Type -> Class α -> TycheckM (Class Type)
+
+tycheckMain :: Show α => Class α -> Either String (Class Type, [String])
+tycheckMain cls@(Class { class_name = nm }) =
+  let init_state =
+        TycheckState { s_parent_class = Nothing
+                     , s_class = TClass TVoid nm
+                     , s_class_static = TClassStatic TVoid nm
+                     , s_constants = Symtab.empty
+                     , s_delta = Symtab.empty
+                     , s_namespaces = Symtab.empty }
+  in
+    runTycheck init_state $ tycheckClass TVoid TVoid cls
+
 
 patternWellFormed :: Symtab (Expr Type) -> Pattern α -> Bool
 patternWellFormed γ (PArray arr) = all (patternWellFormed γ) arr
@@ -641,15 +736,27 @@ dictentry_pattern_binds DEPOpen _ = []
 dictentry_pattern_binds (DEPKV k v) ty = pattern_binds k ty
 
 
--- TODO: split this in to two parts. 1) check that all returns in the
--- body match the return type (in the monad), and 2) check that the
--- function always returns (simple predicate). For 2) we can basically
--- ignore loops. At if branches, if all branches always return
--- (recursive call) then we are done, otherwise we continue looking
--- for a return.
+-- Check that breaks and continues don't occur outside of loops.
+-- breaks_continues_legal :: [Stmt α] -> Bool
+-- breaks_continues_legal = go False
+--   where
+--     go :: Bool -> [Stmt α] -> Bool
+--     go _ [] = True
+--     go False (SBreak _ : _) = False
+--     go False (SContinue _ : _) = False
+--     go in_loop (SWhile _ _ body : stmts) = go True body && go in_loop stmts
+--     go in_loop (SFor _ _ _ body : stmts) = go True body && go in_loop stmts
+--     go in_loop (_:stmts) = go in_loop stmts
 
--- TODO: check that breaks and continues don't occur outside of loops.
+-- This should suffice I think.
+no_breaks_continues :: [Stmt α] -> Bool
+no_breaks_continues stmts =
+  not (any is_break_statement stmts || any is_continue_statement stmts)
 
+-- Check that a function always returns. Ignore loops and only really
+-- care about if conditionals. If all branchs of the conditional
+-- return, then we are done. Otherwise, continue searching for a
+-- return.
 always_returns :: [Stmt α] -> Bool
 always_returns [] = False
 always_returns (SIf _ _ if_branch elifs else_branch : stmts) =
@@ -665,23 +772,24 @@ always_returns (SReturn _ _ : _) = True
 always_returns (_ : stmts) = always_returns stmts
 
 
--- TODO: just check that all return expressions' types are compatible
--- with the argument type.
+-- Check that all return expressions' types are compatible with the
+-- argument type.
 check_returns :: Show α => α -> Type -> [Stmt Type] -> TycheckM ()
-check_returns fi ty body = undefined
-
--- data Stmt α =
---   SPass α
---   | SVar α Id (Maybe Type) (Maybe (Expr α))
---   | SIf α (Expr α) [Stmt α] [(Expr α, [Stmt α])] (Maybe [Stmt α])
---   | SWhile α (Expr α) [Stmt α]
---   | SFor α Id (Expr α) [Stmt α]
---   -- Can have multiple patterns separated by commas (not allowed to be
---   -- binding patterns in that case)
---   | SMatch α (Expr α) [(Pattern α, [Stmt α])]
---   | SBreak α
---   | SContinue α
---   | SAssert α (Expr α)
---   | SReturn α (Expr α)
---   | SExpr α (Expr α)
---   deriving (Eq, Functor)
+check_returns _ _ [] = return ()
+check_returns fi ty (stmt:stmts) =
+  case stmt of
+    SIf _ _ if_branch elifs else_branch -> do
+      check_returns fi ty if_branch
+      mapM_ (secondM $ check_returns fi ty) elifs
+      mapM_ (check_returns fi ty) else_branch
+    SWhile _ _ body -> check_returns fi ty body
+    SFor _ _ _ body -> check_returns fi ty body
+    SMatch _ _ cases ->
+      mapM_ (secondM $ check_returns fi ty) cases
+    SReturn _ e ->
+      if data_of_expr e `compatible` ty then
+        return ()
+      else
+        typeError fi $ "type of expression in return statement not \
+                       \compatible with return type of the function."
+    _ -> return ()

@@ -56,8 +56,8 @@ term :: Parser (Expr SourcePos)
 term = do
   pos <- getSourcePos
   choice
-    [ EType    pos <$> try ty
-    , ELiteral pos <$> literal
+    -- [ EType    pos <$> try ty
+    [ ELiteral pos <$> literal
     , EIdent   pos <$> ident
     , parens expr ]
 
@@ -476,7 +476,8 @@ signal pos = L.indentBlock scn $ do
 
 extends :: SourcePos -> Parser (Command SourcePos)
 extends pos = L.indentBlock scn $ do
-  c <- keyword "extends" >> expr >>= return . CExtends pos
+  -- c <- keyword "extends" >> expr >>= return . CExtends pos
+  c <- keyword "extends" >> ty >>= return . CExtends pos
   return $ L.IndentNone c
 
 classname :: SourcePos -> Parser (Command SourcePos)

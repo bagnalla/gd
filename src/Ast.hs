@@ -71,7 +71,7 @@ data Expr α =
   | EUnop α Unop (Expr α)
   | EBinop α Binop (Expr α) (Expr α)
   | EIfElse α (Expr α) (Expr α) (Expr α)
-  | EType α Type
+  -- | EType α Type
   deriving (Eq, Functor)
 
 data Type =
@@ -111,7 +111,8 @@ data Command α =
   | CConst α Id (Maybe Type) (Expr α)
   -- static, name, return type, args, body
   | CFunc α Bool Id Type [(Id, Type)] [Stmt α]
-  | CExtends α (Expr α)
+  -- | CExtends α (Expr α)
+  | CExtends α Type
   | CClass α (Class α)
   -- name, args
   | CSignal α Id [Id]
@@ -158,7 +159,13 @@ data Class α = Class { class_name :: Id
 -- | Misc helpers
 
 data_of_expr :: Expr α -> α
-data_of_expr = undefined
+data_of_expr (ELiteral fi _)    = fi
+data_of_expr (EIdent fi _)      = fi
+data_of_expr (ECall fi _ _)     = fi
+data_of_expr (EUnop fi _ _)     = fi
+data_of_expr (EBinop fi _ _ _)  = fi
+data_of_expr (EIfElse fi _ _ _) = fi
+-- data_of_expr (EType fi _)       = fi
 
 
 -----------------------------------------------------------------
@@ -188,7 +195,7 @@ instance Show (Expr α) where
     ++ " " ++ show e2 ++ ")"
   show (EIfElse _ e1 e2 e3) = "(EIfElse " ++ show e1 ++ " "
     ++ show e2 ++ " " ++ show e3 ++ ")"
-  show (EType _ t) = "(EType " ++ show t ++ ")"
+  -- show (EType _ t) = "(EType " ++ show t ++ ")"
 
 instance Show (Command α) where
   show (CEnum _ nm entries) = "(CEnum " ++ show nm ++ " (" ++
@@ -216,7 +223,7 @@ instance Show (Command α) where
   show (CSignal _ f args) = "(CSignal " ++ show f ++ " (" ++
     intercalate " " (show <$> args) ++ "))"
   show (CClassName _ nm path) =
-    "(CClasSName " ++ show nm ++ " " ++ showMaybe show path ++ ")"
+    "(CClassName " ++ show nm ++ " " ++ showMaybe show path ++ ")"
 
 instance Show (Stmt α) where
   show (SPass _) = "(SPass)"
