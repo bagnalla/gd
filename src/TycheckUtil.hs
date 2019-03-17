@@ -181,3 +181,20 @@ is_var_command _ = False
 is_extends_command :: Command α -> Bool
 is_extends_command (CExtends _ _) = True
 is_extends_command _ = False
+
+is_literal_pattern :: Pattern α -> Bool
+is_literal_pattern (PLiteral _) = True
+is_literal_pattern _ = False
+
+is_open_entry_pattern :: DictEntryPattern α -> Bool
+is_open_entry_pattern DEPOpen = True
+is_open_entry_pattern _ = False
+
+is_phase1_command :: Command α -> Bool
+is_phase1_command (CConst _ _ _ _) = True
+is_phase1_command (CEnum _ _ _) = True
+is_phase1_command _ = False
+
+is_phase2_command :: Command α -> Bool
+is_phase2_command (CVar _ _ _ _ _ _ _ _) = True
+is_phase2_command _ = False

@@ -5,10 +5,13 @@ import Control.Monad.Identity
 import Control.Monad.Reader
 import Control.Monad.State as S
 import Control.Monad.Writer
+import Data.Bifunctor (second)
 import qualified Data.Map as Map
+import Data.Maybe (fromMaybe)
 
 import Ast
-import Symtab (add, addBindings, empty, fromList, get, Id(..), Symtab)
+import Symtab (add, addBindings, empty, fromList, get, Id(..), Symtab,
+               union)
 import TycheckUtil
 import Util
 
@@ -17,19 +20,50 @@ import Util
 
 type Gamma = Symtab Type
 
--- type FuncType = (Type, [Type])
-
--- Static (consts and static methods) and member (vars and member
--- methods) namespaces.
-type Namespaces = (Symtab Type, Symtab Type)
+type Namespace = Symtab Type
 
 data TycheckState =
   TycheckState { s_parent_class :: Id
+               , s_class :: Type
+               , s_class_static :: Type
                , s_gensym_counter :: Int
                , s_constants :: Symtab (Expr Type)
-               , s_vars :: Symtab Type
+               -- , s_vars :: Symtab Type
                , s_delta :: Symtab Type
-               , s_namespaces :: Map.Map Type Namespaces }
+               , s_namespaces :: Map.Map Type Namespace }
+
+-- upd_namespace :: Type -> Id -> Type -> TycheckState -> TycheckState
+-- upd_namespace s x t st@(TycheckState { s_namespaces = namespaces }) =
+--   st { s_namespaces =
+--        Map.insert s
+--        (Symtab.add x t
+--         (fromMaybe Map.empty $ Map.lookup s namespaces))
+--        namespaces }
+
+upd_constants :: Id -> Expr Type -> TycheckM ()
+upd_constants x e =
+  modify $ \st@(TycheckState { s_constants = consts }) ->
+             st { s_constants = Symtab.add x e consts }
+
+-- upd_vars :: Id -> Type -> TycheckM ()
+-- upd_vars x e =
+--   modify $ \st@(TycheckState { s_vars = vars }) ->
+--              st { s_vars = Symtab.add x e vars }
+
+upd_namespace :: Type -> Id -> Type -> TycheckM ()
+upd_namespace s x t =
+  modify $ \st ->
+             st { s_namespaces =
+                    Map.insert s
+                    (Symtab.add x t
+                      (fromMaybe Map.empty $
+                       Map.lookup s (s_namespaces st)))
+                    (s_namespaces st) }
+
+get_namespace :: Type -> TycheckM (Maybe Namespace)
+get_namespace ty = do
+  namespaces <- gets s_namespaces
+  return $ Map.lookup ty namespaces
 
 ----------------
 -- | Typechecker
@@ -87,22 +121,33 @@ isConstFunc f =
       x `elem` ["sin", "cos"] -- TODO: builtins, constructors, etc.
     _ -> False
 
+-- isConstPattern :: Symtab (Expr Type) -> Pattern α -> Bool
+-- isConstPattern γ (PLiteral lit) = isConstLiteral γ lit
+-- isConstPattern γ (PIdent _) = True
+-- isConstPattern γ (PVar _) = False
 
-tycheckExpr :: Show α => Expr α -> TycheckM (Expr Type)
 
-tycheckExpr (ELiteral _ (LBool b)) = return $ ELiteral TBool (LBool b)
-tycheckExpr (ELiteral _ (LInt i)) = return $ ELiteral TInt (LInt i)
-tycheckExpr (ELiteral _ (LFloat f)) = return $ ELiteral TFloat (LFloat f)
-tycheckExpr (ELiteral _ (LString s)) = return $ ELiteral TString (LString s)
-tycheckExpr (ELiteral fi (LArray arr)) = do
+lookupIdent :: Show α => α -> Id -> TycheckM Type
+lookupIdent fi x = do
+  γ <- ask
+  case Symtab.get x γ of
+    Just ty -> return ty
+    Nothing -> typeError fi $ "unbound identifier " ++ show x
+
+tycheckLiteral :: Show α => α -> Literal α -> TycheckM (Type, Literal Type)
+tycheckLiteral fi (LBool b) = return (TBool, LBool b)
+tycheckLiteral fi (LInt i) = return (TInt, LInt i)
+tycheckLiteral fi (LFloat f) = return (TFloat, LFloat f)
+tycheckLiteral fi (LString s) = return (TString, LString s)
+tycheckLiteral fi (LArray arr) = do
   arr' <- mapM tycheckExpr arr
   let tys = data_of_expr <$> arr'
   ty <- if length arr' == 0 then
           return TDynamic
         else
           return $ if allEq tys then tys!!0 else TDynamic
-  return $ ELiteral (TArray ty) $ LArray arr'
-tycheckExpr (ELiteral fi (LDict entries)) = do
+  return (TArray ty, LArray arr')
+tycheckLiteral fi (LDict entries) = do
   (keys, values) <- unzip <$> mapM (bimapM' tycheckExpr) entries
   let key_tys = data_of_expr <$> keys
   let value_tys = data_of_expr <$> values
@@ -114,13 +159,16 @@ tycheckExpr (ELiteral fi (LDict entries)) = do
                 return TDynamic
               else
                 return $ if allEq value_tys then value_tys!!0 else TDynamic
-  return $ ELiteral (TDict key_ty value_ty) $ LDict $ zip keys values
+  return (TDict key_ty value_ty, LDict $ zip keys values)
 
-tycheckExpr (EIdent fi x) = do
-  γ <- ask
-  case Symtab.get x γ of
-    Just ty -> return $ EIdent ty x
-    Nothing -> typeError fi $ "unbound variable " ++ show x
+
+tycheckExpr :: Show α => Expr α -> TycheckM (Expr Type)
+
+tycheckExpr (ELiteral fi lit) = do
+  (ty, lit') <- tycheckLiteral fi lit
+  return $ ELiteral ty lit'
+
+tycheckExpr (EIdent fi x) = flip EIdent x <$> lookupIdent fi x
 
 tycheckExpr (ECall fi f args) = do
   δ <- gets s_delta
@@ -299,6 +347,17 @@ tycheckExpr (EIfElse fi e1 e2 e3) = do
 tycheckExpr (EType _ t) = return $ EType TDynamic t
 
 
+assertTyExpr :: Show α => Type -> Expr α -> TycheckM (Expr Type)
+assertTyExpr ty e = do
+  e' <- tycheckExpr e
+  let e_ty = data_of_expr e'
+  if e_ty `compatible` ty then
+    return e'
+    else
+    typeError (data_of_expr e) $
+    show e_ty ++ " not compatible with " ++ show ty
+
+
 tycheckStmt :: Show α => Stmt α -> TycheckM (Stmt Type)
 
 tycheckStmt (SPass _) = return $ SPass TNull
@@ -341,17 +400,18 @@ tycheckStmt (SFor fi x e body) = do
   -- | SMatch α (Expr α) [(Pattern α, [Stmt α])]
 tycheckStmt (SMatch fi e cases) = do
   e' <- tycheckExpr e
+  let ty = data_of_expr e'
   cases' <- flip mapM cases $
     \(p, body) -> do
-      body' <-
-        case p of
-          PVar x -> local (Symtab.add x $ data_of_expr e') $
-                    tycheckStmts body
-          PArray ps -> undefined -- TODO
-          PDict ps -> undefined
-          _ -> tycheckStmts body
-      return (p, body')
-  undefined
+      γ <- gets s_constants
+      if patternWellFormed γ p then do
+        tycheckPattern fi p ty
+        let binds = pattern_binds p ty
+        body' <- local (addBindings binds) $ tycheckStmts body
+        return (TVoid <$ p, body')
+        else
+        typeError fi "ill-formed pattern"
+  return $ SMatch TVoid e' cases'
 
 tycheckStmt (SBreak _) = return $ SBreak TVoid
 tycheckStmt (SContinue _) = return $ SContinue TVoid
@@ -374,7 +434,11 @@ tycheckStmts [] = return []
 
 tycheckCommand :: Show α => Command α -> TycheckM (Command Type)
 
-tycheckCommand (CEnum fi nm fields) = undefined
+-- TODO: after this, bind nm to enum type and bind the type to a
+-- namespace containing the fields.
+tycheckCommand (CEnum fi nm fields) = do
+  fields' <- mapM (secondM $ mapM $ assertTyExpr TInt) fields
+  return $ CEnum TVoid nm fields'
 
 tycheckCommand (CVar fi _ _ _ x ty init_val setget) = undefined
 
@@ -394,60 +458,104 @@ tycheckCommand (CConst fi x ty e) = do
     else
     typeError fi "expected a constant expression"
 
--- Static functions won't include s_vars from the tycheck state in the
--- initial gamma.
-tycheckCommand (CFunc fi static f ret_ty args body) = undefined
+-- Static functions won't include member bindings in initial gamma.
+tycheckCommand (CFunc fi static f ret_ty args body) = do
+  class_ty <- gets s_class
+  class_static_ty <- gets s_class_static
+  class_namespace <- fromMaybe empty <$> get_namespace class_ty
+  class_static_namespace <-
+    fromMaybe empty <$> get_namespace class_static_ty
+  let γ = if static then
+            class_static_namespace
+          else
+            Symtab.union class_static_namespace class_namespace
+  let γ' = addBindings args γ
+  body' <- local (const γ') $ tycheckStmts body
+  -- Analyze body to ensure that all return statements match the
+  -- return type, and if the return type is non-void that all branches
+  -- return something.
+  if ret_ty /= TVoid && not (always_returns body') then
+    typeError fi
+    "function with non-void return type must always return something"
+    else do
+    check_returns fi ret_ty body'
+    return $ CFunc TVoid static f ret_ty args body'
 
 tycheckCommand (CExtends fi e) = undefined
 
-tycheckCommand (CClass fi cls) = CClass TVoid <$> tycheckClass cls
+tycheckCommand (CClass fi cls) = do
+  outer_class <- gets s_class_static
+  CClass TVoid <$> tycheckClass outer_class cls
 
 tycheckCommand (CSignal _ _ _) = undefined
 
 tycheckCommand (CClassName fi nm path) = undefined
 
 
-tycheckClass :: Show α => Class α -> TycheckM (Class Type)
-tycheckClass (Class { class_name = nm
-                    , class_commands = coms }) = do
+tycheckClass :: Show α => Type -> Class α -> TycheckM (Class Type)
+tycheckClass outer_class (Class { class_name = nm
+                                , class_commands = coms }) = do
+  let class_ty = TClass outer_class nm
+  let class_static_ty = TClassStatic outer_class nm
   let f_coms = filter is_func_command coms
-  let const_coms = filter is_const_command coms
-  let var_coms = filter is_var_command coms
-  let extends_coms = filter is_extends_command coms
+  let phase1_coms = filter is_phase1_command coms
+  let phase2_coms = filter is_phase2_command coms
+  -- let extends_coms = filter is_extends_command coms
   let f_tys = flip map f_coms $
               \(CFunc _ _ f ty args _) ->
                 (f, TFunc ty $ snd <$> args)
-
-  -- TODO: add namespaces for the class being defined and add all of
-  -- the functions to them. Also add a binding of 'self' to that type
-  -- in gamma.
+  
+  -- Add bindings for all static things (consts, enums, static
+  -- methods, etc.) to the static namespace for this class, and add
+  -- bindings for all member stuff (vars, functions, etc.) to the
+  -- member namespace.  When typechecking the bodies of functions,
+  -- initialize gamma with local bindings for all of them as well as a
+  -- 'self' binding.
 
   -- Add types of all functions to delta.
   modify $ \s -> s { s_delta = addBindings f_tys $ s_delta s }
 
-  -- Typecheck constants, adding their expressions and types to the
-  -- state along the way.
-  const_coms' <- flip mapM const_coms $
+  -- Typecheck static stuff (constants, enums), adding their bindings
+  -- to the state along the way.
+  phase1_coms' <- flip mapM phase1_coms $
                  \c -> do
                    c' <- tycheckCommand c
                    case c' of
                      CConst _ x (Just ty) e -> do
-                       modify $
-                         \s ->
-                           s { s_constants = Symtab.add x e (s_constants s)
-                             , s_vars = Symtab.add x ty (s_vars s) }
-                       return c'
-                       
-  var_coms' <- flip mapM const_coms $
+                       -- Add constant binding.
+                       upd_constants x e
+                       -- -- Add var binding.
+                       -- upd_vars x $ data_of_expr e
+                       -- Add binding to class static namespace.
+                       upd_namespace class_static_ty x ty
+                     CEnum _ nm fields -> do
+                       let field_binds = (second $ const TInt) <$> fields
+                       case nm of
+                         Just x -> do
+                           -- If the enum is named, add a binding for
+                           -- it in the class's static namespace and
+                           -- add bindings for its fields in its own
+                           -- namespace.
+                           let enum_ty = TEnum class_static_ty x
+                           upd_namespace class_static_ty x enum_ty
+                           flip mapM_ field_binds $
+                             \(y, ty) -> upd_namespace enum_ty y ty
+                         Nothing ->
+                           -- If the enum is not named, add bindings
+                           -- for its fields in the class's namespace.
+                           flip mapM_ field_binds $
+                             \(y, ty) -> upd_namespace class_ty y ty
+                   return c'
+
+  phase2_coms' <- flip mapM phase2_coms $
                \c -> do
                  c' <- tycheckCommand c
                  case c' of
-                   CVar _ _ _ _ x (Just ty) e _ -> do
-                     modify $
-                       \s ->
-                         s { s_vars = Symtab.add x ty (s_vars s) }
-                     return c'
-  
+                   CVar _ _ _ _ x (Just ty) _ _ ->
+                     -- Add binding to class namespace.
+                     upd_namespace class_ty x ty
+                 return c'
+
   undefined
 
 -- data Class α = Class { class_name :: Id
@@ -467,4 +575,113 @@ tycheckClass (Class { class_name = nm
 --   -- name, args
 --   | CSignal α Id [Id]
 --   | CClassName α Id (Maybe String)
+--   deriving (Eq, Functor)
+
+patternWellFormed :: Symtab (Expr Type) -> Pattern α -> Bool
+patternWellFormed γ (PArray arr) = all (patternWellFormed γ) arr
+patternWellFormed γ (PDict pats) =
+  if null pats then True else
+    let open_ok = not (any is_open_entry_pattern $ init pats) in
+      all (\pat -> case pat of
+              DEPOpen -> True
+              DEPKV k v -> is_literal_pattern k && patternWellFormed γ v)
+      pats
+patternWellFormed γ (PMulti pats) = all (patternWellFormed γ) pats
+patternWellFormed _ _ = True
+
+
+tycheckPattern :: Show α => α -> Pattern α -> Type -> TycheckM ()
+tycheckPattern fi (PLiteral lit) ty = do
+  γ <- gets s_constants
+  if isConstLiteral γ lit then do
+    (lit_ty, lit') <- tycheckLiteral fi lit
+    if lit_ty `compatible` ty then
+      return ()
+      else
+      typeError fi $ show lit_ty ++ "not compatible with " ++ show ty
+  else
+    typeError fi $ "expected constant expression"
+tycheckPattern fi (PIdent x) ty = do
+  id_ty <- lookupIdent fi x
+  if id_ty `compatible` ty then
+    return ()
+    else
+    typeError fi $ show id_ty ++ " not compatible with " ++ show ty
+
+-- Check pattern is well-formed before using this.
+tycheckPattern _ _ TDynamic = return()
+tycheckPattern _ (PVar _) _ = return ()
+tycheckPattern _ (PWildcard) _ = return ()
+tycheckPattern fi (PArray arr) (TArray ty) =
+  mapM_ (flip (tycheckPattern fi) ty) arr
+tycheckPattern fi (PArray arr) ty =
+  typeError fi $ "expected array type. actual: " ++ show ty
+tycheckPattern fi (PDict pats) (TDict k_ty v_ty) =
+  mapM_ (\pat -> case pat of
+            DEPOpen -> return ()
+            DEPKV k v -> tycheckPattern fi k k_ty >>
+                         tycheckPattern fi v v_ty)
+  pats
+tycheckPattern fi (PDict pats) ty =
+  typeError fi $ "expected dict type. actual: " ++ show ty
+tycheckPattern fi (PMulti pats) ty =
+  mapM_ (flip (tycheckPattern fi) ty) pats
+
+
+pattern_binds :: Pattern α -> Type -> [(Id, Type)]
+pattern_binds (PVar x) ty = [(x, ty)]
+pattern_binds (PArray ps) (TArray t) =
+  concat $ flip pattern_binds t <$> ps
+pattern_binds (PDict ps) (TDict k v) =
+  concat $ flip dictentry_pattern_binds v <$> ps
+pattern_binds _ _ = []
+
+dictentry_pattern_binds :: DictEntryPattern α -> Type -> [(Id, Type)]
+dictentry_pattern_binds DEPOpen _ = []
+dictentry_pattern_binds (DEPKV k v) ty = pattern_binds k ty
+
+
+-- TODO: split this in to two parts. 1) check that all returns in the
+-- body match the return type (in the monad), and 2) check that the
+-- function always returns (simple predicate). For 2) we can basically
+-- ignore loops. At if branches, if all branches always return
+-- (recursive call) then we are done, otherwise we continue looking
+-- for a return.
+
+-- TODO: check that breaks and continues don't occur outside of loops.
+
+always_returns :: [Stmt α] -> Bool
+always_returns [] = False
+always_returns (SIf _ _ if_branch elifs else_branch : stmts) =
+  if always_returns if_branch &&
+  (all always_returns (snd <$> elifs)) &&
+  fromMaybe True (always_returns <$> else_branch) then
+    True
+  else
+    always_returns stmts
+always_returns (SReturn _ _ : _) = True
+-- always_returns (SBreak _ : _) = False
+-- always_returns (SContinue _ : _) = False
+always_returns (_ : stmts) = always_returns stmts
+
+
+-- TODO: just check that all return expressions' types are compatible
+-- with the argument type.
+check_returns :: Show α => α -> Type -> [Stmt Type] -> TycheckM ()
+check_returns fi ty body = undefined
+
+-- data Stmt α =
+--   SPass α
+--   | SVar α Id (Maybe Type) (Maybe (Expr α))
+--   | SIf α (Expr α) [Stmt α] [(Expr α, [Stmt α])] (Maybe [Stmt α])
+--   | SWhile α (Expr α) [Stmt α]
+--   | SFor α Id (Expr α) [Stmt α]
+--   -- Can have multiple patterns separated by commas (not allowed to be
+--   -- binding patterns in that case)
+--   | SMatch α (Expr α) [(Pattern α, [Stmt α])]
+--   | SBreak α
+--   | SContinue α
+--   | SAssert α (Expr α)
+--   | SReturn α (Expr α)
+--   | SExpr α (Expr α)
 --   deriving (Eq, Functor)

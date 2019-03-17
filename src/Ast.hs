@@ -67,7 +67,6 @@ data Literal α =
 data Expr α =
   ELiteral α (Literal α)
   | EIdent α Id
-  -- | ECall α Id [Expr α]
   | ECall α (Expr α) [Expr α]
   | EUnop α Unop (Expr α)
   | EBinop α Binop (Expr α) (Expr α)
@@ -97,11 +96,12 @@ data Type =
   | TObject
   | TArray Type
   | TDict Type Type
-  | TClass Id
-  | TVar Id
+  | TClass Type Id
+  | TClassStatic Type Id
+  | TEnum Type Id
   | TDynamic
   | TFunc Type [Type]
-  deriving (Eq, Show)
+  deriving (Eq, Ord, Show)
 
 data Command α = 
   CEnum α (Maybe Id) [(Id, Maybe (Expr α))]

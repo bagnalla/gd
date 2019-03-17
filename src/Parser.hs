@@ -52,76 +52,16 @@ literal = choice
   , LArray  <$> brackets (commaSep expr)
   , LDict   <$> braces (commaSep dictEntry) ]
 
--- call :: SourcePos -> Parser (Expr SourcePos)
--- call s = do
---   f <- ident
---   args <- parens $ commaSep expr
---   return $ ECall s f args
-
--- qualified_ident :: Parser (Expr SourcePos)
--- qualified_ident = do
---   pos <- getSourcePos
---   ids <- ident `sepBy` (symbol ".")
---   case mk_qualified_ident pos ids of
---     Just x -> return x
---     Nothing -> empty
-
--- mk_qualified_ident :: α -> [Id] -> Maybe (Expr α)
--- mk_qualified_ident fi ids =
---   foldl (\acc x ->
---            case acc of
---              Nothing ->
---                Just $ EIdent fi x
---              Just e ->
---                Just $ EBinop fi BAttribute e (EIdent fi x))
---   Nothing ids
-
--- callTerm :: Parser (Expr SourcePos)
--- callTerm = do
---   pos <- getSourcePos
---   choice [try (call pos)
---          , EIdent pos <$> ident]
-
--- callExpr :: Parser (Expr SourcePos)
--- callExpr = makeExprParser callTerm callExprTable
-
--- callExprTable :: [[Operator Parser (Expr SourcePos)]]
--- callExprTable =  [ [ binary "." $ flip EBinop BAttribute ] ]
-
-
--- qualified_ident :: Parser (Expr SourcePos)
--- qualified_ident = do
---   pos <- getSourcePos
---   qualifier <- optional $ expr >>= \e -> symbol "." >> return e
---   x <- ident
---   case qualifier of
---     Just e -> return $ EBinop pos BAttribute e (EIdent pos x)
---     Nothing -> return $ EIdent pos x
-
--- call :: SourcePos -> Parser (Expr SourcePos)
--- call pos = do
---   -- f <- expr
---   -- f <- qualified_ident
---   -- f <- EIdent pos <$> ident
---   f <- callExpr
---   args <- parens $ commaSep expr
---   return $ ECall pos f args
-
 term :: Parser (Expr SourcePos)
 term = do
   pos <- getSourcePos
   choice
-    -- [ try $ call s
-    -- [ callExpr
-    -- [ try postfixExpr
     [ EType    pos <$> try ty
     , ELiteral pos <$> literal
     , EIdent   pos <$> ident
     , parens expr ]
 
 expr :: Parser (Expr SourcePos)
--- expr = (try postfixExpr) <|> (makeExprParser term operatorTable)
--- expr = makeExprParser term operatorTable
 expr = makeExprParser postfixExpr operatorTable
 
 binary :: String ->
@@ -160,41 +100,6 @@ postfix name f = Postfix $ do
 op n ms =
   (lexeme . try) (string n <* notFollowedBy (choice (char <$> ms)))
 
--- indexOp :: Operator Parser (Expr SourcePos)
--- indexOp = Postfix $ do
---   s <- getSourcePos
---   index <- brackets expr
---   return $ flip (EBinop s BIndex) index
-
--- indexOp :: Operator Parser (Expr SourcePos)
--- indexOp = Postfix $ do
---   pos <- getSourcePos
---   index <- brackets expr
---   return $ flip (EBinop pos BIndex) index
-
--- callOp :: Operator Parser (Expr SourcePos)
--- callOp = Postfix $ do
---   pos <- getSourcePos
---   -- f <- expr
---   try $ do
---     args <- parens $ commaSep expr
---     -- return $ ECall pos f args
---     return $ flip (ECall pos) args
-  
--- dotOp :: Operator Parser (Expr SourcePos)
--- dotOp = Postfix $ do
---   pos <- getSourcePos
---   symbol "."
---   e <- expr
---   return $ flip (EBinop pos BAttribute) e
-
--- dotOp :: Operator Parser (Expr SourcePos)
--- dotOp = Prefix $ do
---   pos <- getSourcePos
---   e <- expr
---   symbol "."
---   return $ EBinop pos BAttribute e
-
 ifelseOp :: Operator Parser (Expr SourcePos)
 ifelseOp = Postfix $ do
   s <- getSourcePos
@@ -204,7 +109,6 @@ ifelseOp = Postfix $ do
   e3 <- expr
   return $ \e1 -> EIfElse s e1 e2 e3
 
--- postfixOp :: Operator Parser (Expr SourcePos)
 postfixOp :: Parser (Expr SourcePos -> Expr SourcePos)
 postfixOp = do
   pos <- getSourcePos
@@ -228,9 +132,7 @@ postfixOp = do
     )
 
 postfixExpr :: Parser (Expr SourcePos)
-postfixExpr =
-  -- try (postfixChain (try term) postfixOp) <|> term
-  postfixChain term postfixOp
+postfixExpr = postfixChain term postfixOp
 
 -- Helper for single-character operators that overlap with others. For
 -- example, we must use this for the regular addition operator '+' or
@@ -241,12 +143,7 @@ op' b s cs = InfixL $ getSourcePos >>= \pos -> EBinop pos b <$ op s cs
 operatorTable :: [[Operator Parser (Expr SourcePos)]]
 operatorTable =  [
   [ prefix "$" $ flip EUnop UGetNode ],
-  -- [ indexOp ],
-  -- [ postfixChain  ]
   [ prefix "." $ flip EUnop UAttribute ],
-  -- [ dotOp, callOp ],
-  -- [ binary "." $ flip EBinop BAttribute ],
-  -- [ callOp ],
   [ binaryNoAssoc "is" $ flip EBinop BIs ],
   [ prefix "~" $ flip EUnop UBitwiseNot ],
   [ prefix "-" $ flip EUnop UNeg ],
@@ -486,7 +383,17 @@ ty = choice
   , keyword "dynamic"     >> return TDynamic
   , array_ty
   , dict_ty
-  , ident >>= return . TClass ]
+  , class_ty ]
+  -- , ident >>= return . TClass ]
+
+class_ty_op :: Parser (Type -> Type)
+class_ty_op = do
+  symbol "."
+  x <- ident
+  return $ flip TClass x
+
+class_ty :: Parser Type
+class_ty = postfixChain (TClass TVoid <$> ident) class_ty_op
 
 enumEntry :: Parser (Id, Maybe (Expr SourcePos))
 enumEntry = do
@@ -577,7 +484,6 @@ classname pos = L.indentBlock scn $ do
   keyword "class_name"
   nm <- ident
   path <- optional $ symbol "," >> stringLiteral
-  -- return $ L.IndentNone $ CClassName pos (Id "") Nothing
   return $ L.IndentNone $ CClassName pos nm path
 
 command :: Parser (Command SourcePos)
