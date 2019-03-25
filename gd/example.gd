@@ -2,7 +2,8 @@
 
 # Inheritance
 
-extends BaseClass
+# extends BaseClass
+extends Node
 
 # signal Bakow(asdasd, asd)
 

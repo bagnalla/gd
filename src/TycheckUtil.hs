@@ -1,15 +1,29 @@
 module TycheckUtil where
 
+import Data.Bifunctor (first)
+
 import Ast
+import Intrinsics
+import Namespace
+import Symtab
 
 string_or_ident :: Expr α -> Bool
 string_or_ident (ELiteral _ (LString _)) = True
 string_or_ident (EIdent _ _) = True
 string_or_ident _ = False
 
--- Can 's' be used where 't' is expected?
+-- Can 's' be used where 't' is expected? This is basically a subtype
+-- check.
+-- TODO: Take inheritance into account.
 compatible :: Type -> Type -> Bool
 compatible s TDynamic = True
+compatible TInt TFloat = True
+compatible (TArray s) (TArray t) = compatible s t
+compatible (TDict k1 v1) (TDict k2 v2) =
+  compatible k1 k2 && compatible v1 v2
+-- compatible (TClass outer_x x) (TClass outer_y y) = subtype check
+compatible (TClassStatic _ _) _ = error "static class in 'compatible' check"
+compatible _ (TClassStatic _ _) = error "static class in 'compatible' check"
 compatible s t = s == t
 
 is_numeric :: Type -> Bool
@@ -98,6 +112,17 @@ numeric_binop BMinusAssign = True
 numeric_binop BMultAssign  = True
 numeric_binop BDivAssign   = True
 numeric_binop _ = False
+
+assign_binop :: Binop -> Bool
+assign_binop BAssign      = True
+assign_binop BPlusAssign  = True
+assign_binop BMinusAssign = True
+assign_binop BMultAssign  = True
+assign_binop BDivAssign   = True
+assign_binop BModAssign   = True
+assign_binop BAndAssign   = True
+assign_binop BOrAssign    = True
+assign_binop _ = False
 
 int_binop :: Binop -> Bool
 int_binop BMod = True
@@ -201,8 +226,74 @@ is_open_entry_pattern _ = False
 is_phase1_command :: Command α -> Bool
 is_phase1_command (CConst _ _ _ _) = True
 is_phase1_command (CEnum _ _ _) = True
+is_phase1_command (CClass _ _) = True
 is_phase1_command _ = False
 
 is_phase2_command :: Command α -> Bool
 is_phase2_command (CVar _ _ _ _ _ _ _ _) = True
 is_phase2_command _ = False
+
+
+-- Checking if expressions are considered constant.
+isConstLiteral :: Symtab (Expr Type) -> Literal α -> Bool
+isConstLiteral _ (LBool _)   = True
+isConstLiteral _ (LInt _)    = True
+isConstLiteral _ (LFloat _)  = True
+isConstLiteral _ (LString _) = True
+isConstLiteral γ (LArray arr) = all (isConstExpr γ) arr
+isConstLiteral γ (LDict entries) =
+  let (keys, values) = unzip entries in
+    all (isConstExpr γ) keys && all (isConstExpr γ) values
+
+-- γ is for names of declared constants and things like PI.
+isConstExpr :: Symtab (Expr Type) -> Expr α -> Bool
+isConstExpr γ (ELiteral _ lit) = isConstLiteral γ lit
+isConstExpr γ (EIdent _ x) =
+  case Symtab.get x γ of
+    Just _  -> True
+    Nothing -> False
+isConstExpr γ (ECall _ f args) =
+  isConstFunc f && all (isConstExpr γ) args
+isConstExpr γ (EUnop _ _ e) = isConstExpr γ e 
+isConstExpr γ (EBinop _ _ e1 e2) = isConstExpr γ e1 && isConstExpr γ e2
+isConstExpr _ (EIfElse _ _ _ _) = False
+
+isConstFunc :: Expr α -> Bool
+isConstFunc f =
+  case f of
+    EIdent _ (Id x) ->
+      x `elem` (fst <$> constant_functions)
+    _ -> False
+
+-- isConstPattern :: Symtab (Expr Type) -> Pattern α -> Bool
+-- isConstPattern γ (PLiteral lit) = isConstLiteral γ lit
+-- isConstPattern γ (PIdent _) = True
+-- isConstPattern γ (PVar _) = False
+
+
+-- This should suffice I think.
+no_breaks_continues :: [Stmt α] -> Bool
+no_breaks_continues stmts =
+  not (any is_break_statement stmts || any is_continue_statement stmts)
+
+
+-- Built-in namespaces / global environment.
+
+builtin_namespaces :: Symtab Namespace
+builtin_namespaces = fromList $ go <$> builtin_type_namespaces
+  where
+    go :: (Id, [String], [(String, Type)], [(String, Type)]) ->
+          (Id, Namespace)
+    go (x, ty_params, var_bindings, fun_bindings) =
+      (x, Namespace { ns_params = Id <$> ty_params
+                    , ns_vars = fromList $ first Id <$> var_bindings
+                    , ns_funs = fromList $ first Id <$> fun_bindings})
+
+builtin_function_env :: Symtab Type
+builtin_function_env =
+  fromList $ first Id <$> (builtin_constructors ++
+                           builtin_functions ++
+                           constant_functions)
+
+builtin_constants :: Symtab Type
+builtin_constants = fromList $ first Id <$> constant_vars

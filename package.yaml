@@ -30,6 +30,12 @@ library:
   - containers
   - language-c
   - mtl
+  - aeson
+  - bytestring
+  - vector
+  - unordered-containers
+  - text
+  - scientific
 
 executables:
   gd-exe:
@@ -42,6 +48,9 @@ executables:
     dependencies:
     - gd
     - megaparsec
+    - aeson
+    - bytestring
+    - vector
 
 tests:
   gd-test:

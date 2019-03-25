@@ -4,7 +4,7 @@ module Ast where
 
 import Data.List (intercalate)
 
-import Symtab (Id)
+import Symtab (Id(..))
 
 
 data Unop =
@@ -93,15 +93,38 @@ data Type =
   | TColor
   | TNodePath
   | TRID
-  | TObject
+  | TPoolColorArray
+  | TPoolVector3Array
+  | TPoolVector2Array
+  | TPoolStringArray
+  | TPoolRealArray
+  | TPoolIntArray
+  | TPoolByteArray
   | TArray Type
   | TDict Type Type
+  -- outer class, name
   | TClass Type Id
   | TClassStatic Type Id
   | TEnum Type Id
   | TDynamic
-  | TFunc Type [Type]
-  deriving (Eq, Ord, Show)
+  -- Overloads
+  | TFunc [(Type, [Type])]
+  | TVar Id
+  deriving (Eq, Ord)
+
+-- The primitive built-in types (not including TDynamic).
+builtin_types :: [Type]
+builtin_types =
+  [TVoid, TNull, TBool, TInt, TFloat, TString, TVector2, TRect2, TVector3,
+   TTransform2D, TPlane, TQuat, TAABB, TBasis, TTransform, TColor,
+   TNodePath, TRID, TPoolColorArray, TPoolVector3Array, TPoolVector2Array,
+   TPoolStringArray, TPoolRealArray, TPoolIntArray, TPoolByteArray]
+  
+type_args :: Type -> [Type]
+type_args (TArray ty) = [ty]
+type_args (TDict k v) = [k, v]
+type_args _ = []
+
 
 data Command α = 
   CEnum α (Maybe Id) [(Id, Maybe (Expr α))]
@@ -113,6 +136,7 @@ data Command α =
   | CFunc α Bool Id Type [(Id, Type)] [Stmt α]
   -- | CExtends α (Expr α)
   | CExtends α Type
+  -- | CExtends α Id
   | CClass α (Class α)
   -- name, args
   | CSignal α Id [Id]
@@ -165,7 +189,6 @@ data_of_expr (ECall fi _ _)     = fi
 data_of_expr (EUnop fi _ _)     = fi
 data_of_expr (EBinop fi _ _ _)  = fi
 data_of_expr (EIfElse fi _ _ _) = fi
--- data_of_expr (EType fi _)       = fi
 
 
 -----------------------------------------------------------------
@@ -260,3 +283,55 @@ instance Show (Class α) where
               , class_commands = coms }) =
     "(Class " ++ show nm ++ " (" ++
     intercalate " " (show <$> coms) ++ "))"
+
+-- TODO: fill missing types
+-- Static types are postfixed by "@static" so they differ from the
+-- regular names in a way that can't appear in a legal identifier.
+instance Show Type where
+  show TVoid                  = "void"
+  show TNull                  = "null"
+  show TBool                  = "bool"
+  show TInt                   = "int"
+  show TFloat                 = "float"
+  show TString                = "String"
+  show TVector2               = "Vector2"
+  show TRect2                 = "Rect2"
+  show TVector3               = "Vector3"
+  show TTransform2D           = "Transform2D"
+  show TPlane                 = "Plane"
+  show TQuat                  = "Quat"
+  show TAABB                  = "AABB"
+  show TBasis                 = "Basis"
+  show TTransform             = "Transform"
+  show TColor                 = "Color"
+  show TNodePath              = "NodePath"
+  show TRID                   = "RID"
+  show TPoolColorArray        = "TPoolColorArray"
+  show TPoolVector3Array      = "TPoolVector3Array"
+  show TPoolVector2Array      = "TPoolVector2Array"
+  show TPoolStringArray       = "TPoolStringArray"
+  show TPoolRealArray         = "TPoolRealArray"
+  show TPoolIntArray          = "TPoolIntArray"
+  show TPoolByteArray         = "TPoolByteArray"
+  show (TArray ty)            = "(array " ++ show ty ++ ")"
+  show (TDict k v)            = "(dict " ++ show k ++ " " ++ show v ++ ")"
+  show (TClass TVoid x)       = show x
+  show (TClass ty x)          = show ty ++ "." ++ show x
+  show (TClassStatic TVoid x) = show x ++ "@static"
+  show (TClassStatic ty x)    = show ty ++ "." ++ show x ++ "@static"
+  show (TEnum TVoid x)        = show x
+  show (TEnum ty x)           = show ty ++ "." ++ show x
+  show TDynamic               = "dynamic"
+  show (TFunc sigs)           = "(function: " ++ show sigs ++ ")"
+  show (TVar x)               = "(TVar " ++ show x ++ ")"
+
+-- Compute a fully qualified lookup name for a type.
+type_name :: Type -> Id
+-- type_name = Id . show
+type_name (TArray _) = Id "@array"
+type_name (TDict _ _) = Id "@dict"
+type_name ty = Id $ show ty
+
+type_to_static :: Type -> Type
+type_to_static (TClass par x) = TClassStatic (type_to_static par) x
+type_to_static ty = ty

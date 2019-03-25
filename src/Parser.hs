@@ -45,7 +45,6 @@ dictEntry = do
 literal :: Parser (Literal SourcePos)
 literal = choice
   [ LBool   <$> bool
-  -- , LInt    <$> integer
   , LFloat  <$> try float
   , LInt    <$> integer
   , LString <$> stringLiteral
@@ -143,7 +142,7 @@ op' b s cs = InfixL $ getSourcePos >>= \pos -> EBinop pos b <$ op s cs
 operatorTable :: [[Operator Parser (Expr SourcePos)]]
 operatorTable =  [
   [ prefix "$" $ flip EUnop UGetNode ],
-  [ prefix "." $ flip EUnop UAttribute ],
+  [ prefix "." $ flip EUnop UAttribute ], -- TODO: this isn't right
   [ binaryNoAssoc "is" $ flip EBinop BIs ],
   [ prefix "~" $ flip EUnop UBitwiseNot ],
   [ prefix "-" $ flip EUnop UNeg ],
@@ -328,7 +327,6 @@ sexpr pos = SExpr pos <$> expr
 stmt :: Parser (Stmt SourcePos)
 stmt = do
   pos <- getSourcePos
-  -- debugPrint (show pos) $
   choice
     [ spass pos
     , svar pos
@@ -379,12 +377,17 @@ ty = choice
   , keyword "Color"       >> return TColor
   , keyword "NodePath"    >> return TNodePath
   , keyword "RID"         >> return TRID
-  , keyword "Object"      >> return TObject
   , keyword "dynamic"     >> return TDynamic
+  , keyword "PoolColorArray"   >> return TPoolColorArray
+  , keyword "PoolVector3Array" >> return TPoolVector3Array
+  , keyword "PoolVector2Array" >> return TPoolVector2Array
+  , keyword "PoolStringArray"  >> return TPoolStringArray
+  , keyword "PoolRealArray"    >> return TPoolRealArray
+  , keyword "PoolIntArray"     >> return TPoolIntArray
+  , keyword "PoolByteArray"    >> return TPoolByteArray
   , array_ty
   , dict_ty
   , class_ty ]
-  -- , ident >>= return . TClass ]
 
 class_ty_op :: Parser (Type -> Type)
 class_ty_op = do

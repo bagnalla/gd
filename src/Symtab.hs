@@ -3,7 +3,8 @@
 
 module Symtab (
   Id(..), Symtab, empty, add, get, exists, keys, fold, Symtab.map, mapi,
-  assocGet, assocSet, assocUpdate, assocIndex, fromList, union, addBindings
+  assocGet, assocSet, assocUpdate, assocIndex, fromList, union, addBindings,
+  toList
   ) where
 
 -- Use Haskell's map data structure
@@ -79,6 +80,9 @@ mapi = Map.mapWithKey
 
 fromList :: [(Id, a)] -> Symtab a
 fromList = Map.fromList
+
+toList :: Symtab a -> [(Id, a)]
+toList = Map.toList
 
 union :: Symtab a -> Symtab a -> Symtab a
 union = Map.union

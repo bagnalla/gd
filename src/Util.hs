@@ -8,9 +8,17 @@ import Debug.Trace (trace)
 
 debugPrint :: String -> b -> b
 debugPrint = trace
+debugPrint_ :: String -> ()
+debugPrint_ s = debugPrint s $ ()
+debugPrintM_ :: Monad m => String -> m ()
+debugPrintM_ s = debugPrint s $ return ()
 
 -- debugPrint :: String -> b -> b
 -- debugPrint = const id
+-- debugPrint_ :: String -> ()
+-- debugPrint_ = const ()
+-- debugPrintM_ :: Monad m => String -> m ()
+-- debugPrintM_ = const $ return ()
 
 tupleFun :: (a -> b) -> (a -> c) -> a -> (b, c)
 tupleFun f g x = (f x, g x)

@@ -10,7 +10,7 @@ var b
 var a
 
 var field = []
-const STARTOTAL = 600
+const STARTOTAL := 600
 
 const SIZE_INDEX = 0
 const POSITION_INDEX = 1
@@ -19,7 +19,7 @@ const COLOR_INDEX = 2
 enum { TEST = 0+1 }
 
 func TestFunc():
-	print(TESt)
+	print(TEST)
 
 func yield():
 	print("yield")
@@ -98,14 +98,14 @@ func _draw():
 	max_x = get_viewport().size.x
 	max_y = get_viewport().size.y
 	
-	var cam_pos = Game.cam.global_transform.origin
-	var bounds = Rect2(-2, -2, max_x + 4, max_y + 4)
+	# var cam_pos = Game.cam.global_transform.origin
+	# var bounds = Rect2(-2, -2, max_x + 4, max_y + 4)
 	
-	for star in field:
-		var world_point = cam_pos + star[POSITION_INDEX]
-		if Game.cam.is_position_behind(world_point):
-			var pos = Game.cam.unproject_position(world_point)
-			pos.x = round(pos.x)
-			pos.y = round(pos.y)
-			if bounds.has_point(pos):
-				draw_texture (textures[star[SIZE_INDEX]], pos, star[COLOR_INDEX])
+	# for star in field:
+	# 	var world_point = cam_pos + star[POSITION_INDEX]
+	# 	if Game.cam.is_position_behind(world_point):
+	# 		var pos = Game.cam.unproject_position(world_point)
+	# 		pos.x = round(pos.x)
+	# 		pos.y = round(pos.y)
+	# 		if bounds.has_point(pos):
+	# 			draw_texture (textures[star[SIZE_INDEX]], pos, star[COLOR_INDEX])
